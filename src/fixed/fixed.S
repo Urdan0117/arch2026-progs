@@ -33,7 +33,9 @@ op1_asm:
     .type   op2_asm, @function
     .align  2
 op2_asm:
-    li      a0, 0
+    # a0 = a, a1 = b -> a0
+    # a - b
+    sub a0, a0, a1
     ret
     .size   op2_asm, .-op2_asm
 
@@ -41,7 +43,14 @@ op2_asm:
     .type   op3_asm, @function
     .align  2
 op3_asm:
-    li      a0, 0
+    # a0 = a, a1 = b -> a0; t0 = a & b
+    and t0, a0, a1
+    # 2. a ^ b
+    xor a0, a0, a1
+    # 3. shift right by one, unsigned
+    srli a0, a0, 1
+    # 4. add the two terms
+    add a0, a0, t0
     ret
     .size   op3_asm, .-op3_asm
 
