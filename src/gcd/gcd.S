@@ -37,10 +37,15 @@ gcd_u32_asm:
 
     # 3. Make b odd, for the same reason.
 .L_right:
-    andi    t1, a1, 1               # parity of b
+    andi    t1, a1, 1               # first entry only: b may already be odd
     bne     t1, x0, .L_order        # b is odd: compare
+.L_shift:
+    # b is even here, so shift first and test afterwards: 3 instructions
+    # per trailing zero, and the last test also finds that b is odd.
     srli    a1, a1, 1               # b /= 2
-    jal     x0, .L_right
+    andi    t1, a1, 1               # parity of b
+    beq     t1, x0, .L_shift        # still even: shift again
+                                    # odd: fall through into .L_order
 
     # 4. Keep a <= b, then b -= a. Both are odd, so b becomes even or 0.
 .L_order:
@@ -50,7 +55,7 @@ gcd_u32_asm:
     addi    a1, t2, 0
 .L_step:
     sub     a1, a1, a0              # b -= a
-    bne     a1, x0, .L_right        # b is not zero yet: repeat
+    bne     a1, x0, .L_shift        # odd - odd is even: shift right away
 
     # 5. Put the shared factor 2^t0 back.
     sll     a0, a0, t0
