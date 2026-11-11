@@ -66,9 +66,20 @@ q_mul_asm:
     addi   t3, a1, 0
     addi   t4, x0, 0
     addi   t5, x0, 0
-    # 2. if y == 0, skip the loop
-    beq    t3, x0, .Lq_done
-.Lq_loop:
+    # 2. if y != 0, go to the bit test; otherwise the product is 0
+    bne    t3, x0, .Lq_test
+    jal    x0, .Lq_done
+.Lq_skip:
+    # The bit was 0. The highest 1 of y is still above it, so y cannot
+    # become 0 here: shift and fall through without checking y.
+    # 5. shift x_hi:x_lo left by one; x_hi takes the top bit of x_lo
+    srli   t6, t1, 31
+    slli   t1, t1, 1
+    slli   t2, t2, 1
+    or     t2, t2, t6
+    # 6. y >>= 1, then fall through into the test
+    srli   t3, t3, 1
+.Lq_test:
     # 3. if the low bit of y is 0, skip the add
     andi   t6, t3, 1
     beq    t6, x0, .Lq_skip
@@ -76,16 +87,15 @@ q_mul_asm:
     add    t4, t4, t1
     sltu   t0, t4, t1
     add    t5, t5, t2
-    add    t5, t5, t0   
-.Lq_skip:
+    add    t5, t5, t0
     # 5. shift x_hi:x_lo left by one; x_hi takes the top bit of x_lo
     srli   t6, t1, 31
     slli   t1, t1, 1
     slli   t2, t2, 1
     or     t2, t2, t6
-    # 6. y >>= 1; repeat while y != 0
+    # 6. y >>= 1; only a pass that adds can leave y == 0
     srli   t3, t3, 1
-    bne    t3, x0, .Lq_loop
+    bne    t3, x0, .Lq_test
 .Lq_done:
     # 7. if a < 0, hi -= b
     bgez   a0, .Lq_skip_hi_sub
