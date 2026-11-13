@@ -170,7 +170,93 @@ bf16_mul_asm:
     .globl  bf16_sqrt_asm
     .type   bf16_sqrt_asm, @function
     .align  2
+
 bf16_sqrt_asm:
-    li      a0, 0
-    ret
+    # a0 = a -> a0
+    # t2 = exp, t4 = mant, a4 = 0xFF, t6 = temp
+    # t3 = e then new_exp, t5 = m
+
+    # 1. exp = (a >> 7) & 0xFF; mant = a & 0x7F
+    li    a4, 0xFF                    # a4 = 0xFF                    (mul: li a4, 0xFF)
+    srli  t2, a0, 7                # t2 = a0 >> 7                 (mul: srli t2, a0, 7)
+    and   t2, t2, a4                # t2 = t2 & 0xFF               (mul: andi t2, t2, 0xFF)
+    andi  t4, a0, 0x7F                # t4 = a0 & 0x7F               (mul: andi t4, a0, 0x7F)
+
+    # 2. exp == 0xFF: NaN returns a, -Inf gives quiet NaN, +Inf returns a
+    bne   t2, a4, .Lsq_check_zero     # exp != 0xFF: go to .Lsq_check_zero     (mul: bne t2, a4, ...)
+    bne   t4, zero, .Lsq_ret                    # mant != 0 (NaN): go to .Lsq_ret        (mul: bnez t4, .Lret_a)
+    srli  t6, a0, 15                    # t6 = a0 >> 15 (sign bit only)
+    bne   t6, zero, .Lsq_nan                   # sign != 0 (-Inf): go to .Lsq_nan
+    ret                    # +Inf: return a                         (ret)
+
+    # 3. +0 or -0: return 0x0000
+
+.Lsq_check_zero:
+    or    t6, t2, t4            # t6 = exp | mant                        (mul: or t6, t2, t4)
+    beqz  t6, .Lsq_zero         # t6 == 0: go to .Lsq_zero               (mul: beqz t6, .Lzero)
+
+    # 4. negative: return quiet NaN
+    srli  t6, a0, 15            # t6 = a0 >> 15
+    bne   t6, zero, .Lsq_nan     # t6 != 0: go to .Lsq_nan
+
+    # 5. subnormal (exp == 0): return 0x0000
+    beq   t2, zero, .Lsq_zero     # exp == 0: go to .Lsq_zero
+
+    # 6. e = exp - 127; m = 0x80 | mant; odd e: m <<= 1
+    addi   t3, t2, -127            # t3 = exp - 127               (e)
+    ori   t5, t4, 0x80            # t5 = mant | 0x80             (m, mul: ori t4, t4, 0x80)
+    andi  t6, t3, 1                # t6 = e & 1                   (1 if e is odd)
+    sll   t5, t5, t6                # t5 = t5 << t6                (sll: shift by a register)
+
+    # 7. new_exp = (e >> 1) + 127 (arithmetic shift)
+    srai  t3, t3, 1                # t3 = e >> 1                  (srai)
+    addi   t3, t3, 127            # t3 = t3 + 127                (new_exp)
+
+    # 8. binary search: largest mid with (mid * mid) >> 7 <= m
+    li    a1, 90                      # a1 = 90                      (low)
+    li    a2, 256                     # a2 = 256                     (high)
+    li    a3, 128                     # a3 = 128                     (result)
+.Lsq_loop:
+    bltu a2, a1, .Lsq_done           # high < low: go to .Lsq_done  (bltu a2, a1)
+    add  a5, a1, a2                 # a5 = a1 + a2
+    srli  a5, a5, 1                  # a5 = a5 >> 1                 (mid)
+
+    # 8a. t0 = mid * mid, shift-and-add on copies of mid
+    add t1, a5, x0                    # t1 = a5                      (multiplicand)
+    add t2, a5, x0                    # t2 = a5                      (multiplier)
+    add t0, x0, x0                    # t0 = 0                       (product)
+.Lsq_mul:
+    andi t6, t2, 1                     # t6 = t2 & 1                  (mul: andi t6, t5, 1)
+    beq t6, zero, .Lsq_mul_shift      # t6 == 0: go to .Lsq_mul_shift
+    add t0, t0, t1                    # t0 = t0 + t1                 (mul: add a3, a3, t4)
+.Lsq_mul_shift:
+    slli t1, t1, 1                    # t1 = t1 << 1
+    srli t2, t2, 1                    # t2 = t2 >> 1
+    bnez t2, .Lsq_mul                # t2 != 0: back to .Lsq_mul    (bnez, one instruction)
+
+    # 8b. compare and narrow the range
+    srli   t0, t0, 7                  # t0 = t0 >> 7                 (sq = mid * mid / 128)
+    bltu   t5, t0, .Lsq_high          # m < sq: go to .Lsq_high      (bltu t5, t0)
+    add    a3, a5, x0                # a3 = a5                      (result = mid)
+    addi    a1, a5, 1                # a1 = a5 + 1                  (low = mid + 1)
+    j       .Lsq_loop                # back to .Lsq_loop
+.Lsq_high:
+    addi    a2, a5, -1                # a2 = a5 - 1                  (high = mid - 1)
+    j       .Lsq_loop                # back to .Lsq_loop
+
+    # 9. return (new_exp << 7) | (result & 0x7F)
+.Lsq_done:
+    andi    a3, a3, 0x7F             # a3 = a3 & 0x7F
+    slli    t3, t3, 7                # t3 = t3 << 7
+    or      a0, t3, a3               # a0 = t3 | a3
+    ret                              # return
+    # shared exits
+.Lsq_zero:
+    add   a0, x0, x0            # a0 = 0
+    ret                    # return
+.Lsq_nan:
+    li    a0, 0x7FC0
+    ret        # a0 = 0x7FC0                            (mul: li a0, 0x7FC0)
+.Lsq_ret:
+    ret                    # return
     .size   bf16_sqrt_asm, .-bf16_sqrt_asm
