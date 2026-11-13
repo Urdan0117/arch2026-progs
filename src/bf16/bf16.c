@@ -86,6 +86,40 @@ uint16_t bf16_mul(uint16_t a, uint16_t b)
 
 uint16_t bf16_sqrt(uint16_t a)
 {
-    (void) a;
-    return 0;
+    uint32_t exp = (a >> 7) & 0xFF, mant = a & 0x7F;
+
+    if (exp == 0xFF) {
+        if (mant)
+            return a;
+        if (a & 0x8000)
+            return 0x7FC0;
+        return a;
+    }
+    if (a == 0x8000 || a == 0x0000)
+        return 0x0000;
+    if (a & 0x8000)
+        return 0x7FC0;
+    if (!exp)
+        return 0x0000;
+
+    int32_t e = (int32_t) exp - 127, new_exp;
+    uint32_t m = 0x80 | mant;
+    if (e & 1) {
+        m <<= 1;
+        new_exp = ((e - 1) >> 1) + 127;
+    } else {
+        new_exp = (e >> 1) + 127;
+    }
+
+    uint32_t low = 90, high = 256, result = 128;
+    while (low <= high) {
+        uint32_t mid = (low + high) >> 1;
+        if ((mid * mid) / 128 <= m) {
+            result = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return (uint16_t) ((new_exp << 7) | (result & 0x7F));
 }
