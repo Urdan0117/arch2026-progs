@@ -109,8 +109,7 @@ bf16_mul_asm:
 .Lmul_shift:
     slli  t4, t4, 1             # multiplicand <<= 1
     srli  t5, t5, 1             # multiplier >>= 1
-    beqz  t5, .Lmul_done        # multiplier == 0: done
-    j     .Lmul
+    bnez t5, .Lmul
 .Lmul_done:
 
     # 8. e = ea + eb - 127 + adj
