@@ -292,7 +292,7 @@ rubik_solve_asm:
 
     # D3: a3/a4 = new cp/co, t6 = g, t0 = h, t1 = g + h then bound - g, t2 = 6
 .Lapply:
-    lbu t2, 8(s0)
+    # t2 = nf, already loaded at .Lno_switch
     # t3 = t2 << 2                  (slli: face * 4, one word per face)
     slli t3, t2, 2
     # t3 = s5 + t3                  (&face_base[face])
