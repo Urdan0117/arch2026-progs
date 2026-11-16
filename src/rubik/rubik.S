@@ -15,13 +15,14 @@ rubik_solve_asm:
     # a0 = state
     # a1 = out 
     # a2 = cap -> a0 = moves, -1 or -2
-    # A. 開 240 byte 的堆疊框
+    # frame: sp+236 = ra, sp+232..sp+192 = s0..s10, sp+0..sp+191 = 12 levels
+    # sp = sp - 240                 (open the frame)
     addi    sp, sp, -240
-    # A. 存 ra 到 236(sp)
+    # mem[sp+236] = ra              (call lookup will overwrite ra)
     sw     ra, 236(sp)
-    # A. 存 s0 到 232(sp)
+    # mem[sp+232] = s0
     sw    s0, 232(sp)
-    #    … s1 到 s10，每個往下 4
+    # s1 .. s10, 4 bytes lower each
     sw    s1, 228(sp)
     sw    s2, 224(sp)
     sw    s3, 220(sp)
@@ -32,28 +33,28 @@ rubik_solve_asm:
     sw    s8, 200(sp)
     sw    s9, 196(sp)
     sw    s10, 192(sp)
-    # A. out 搬到 s3,
+    # s3 = a1                       (out, safe across calls)
     mv    s3, a1
-    # A. cap 搬到 s4
+    # s4 = a2                       (cap, safe across calls)
     mv    s4, a2
 
 
     # t0=seen, t1=i, t2=addr, t3=val, t4=mask, t5=tmp, t6=7
 
-    # B1. seen = 0（t0）
+    # t0 = 0                        (seen: no digit used yet)
     addi    t0, x0, 0
-    # B1. i = 0（t1）
+    # t1 = 0                        (i)
     addi    t1, x0, 0
-    # B1. 常數 7（t6）
+    # t6 = 7                        (loop limit, also the digit limit)
     addi    t6, x0, 7
 .Lperm_chk:
-    # 位址 = state + i（t2）
+    # t2 = a0 + t1                  (&s[i])
     add    t2, a0, t1
-    # 讀 1 byte 到 t3
+    # t3 = mem8[t2]                 (lbu: s[i])
     lbu     t3, 0(t2)
-    # t3 減 '1'
+    # t3 = t3 - '1'                 (c, valid: 0..6)
     addi   t3, t3, -'1'
-    # 無號 t3 >= 7 → .Linvalid
+    # t3 >= t6 unsigned: invalid    (bgeu: below '1' wraps to a huge value)
     bgeu   t3, t6, .Linvalid
     # t4 = 1
     addi   t4, x0, 1
@@ -61,13 +62,13 @@ rubik_solve_asm:
     sll    t4, t4, t3
     # t5 = seen & t4
     and    t5, t0, t4
-    # t5 不是 0 → .Linvalid（重複）
+    # t5 != 0: invalid              (bne: repeated cubie)
     bne    t5, x0, .Linvalid
     # seen |= t4
     or     t0, t0, t4
     # i + 1
     addi   t1, t1, 1
-    # i < 7 → 回 .Lperm_chk
+    # t1 < t6: loop                 (blt)
     blt    t1, t6, .Lperm_chk
 
     # B2: t0 = sum, t1 = i (still 7 from B1), t6 = 3, t5 = 14, t3 = c
@@ -233,13 +234,15 @@ rubik_solve_asm:
     bgeu t0, t1, .Lsearch_keep
     # t0 = t1                       (mv: h = the larger one)
     mv t0, t1
+.Lsearch_keep:
     # t1 = 6
     li t1, 6
     # t0 >= t1 unsigned: keep t0    (bgeu: h is already at least 6)
-    bgeu t0, t1, .Lsearch_keep
+    bgeu t0, t1, .Ld1_keep_6        # h is already at least 6: skip the mv
     # t0 = t1                       (mv: bound starts at 6)
     mv t0, t1
     # s2 = t0                       (mv: bound)
+.Ld1_keep_6:
     mv s2, t0
 
     # D2: s0 = level, t0 = nt, t1 = 3, t2 = nf, t3 = parent nf or ps/os
@@ -287,11 +290,123 @@ rubik_solve_asm:
     # loop                          (j .Lloop)
     j .Lloop
 
-.Lapply:                 # 暫時：D3、D4 還沒寫
-.Lback:
-    li   a0, 0
-    j    .Lexit
+    # D3: a3/a4 = new cp/co, t6 = g, t0 = h, t1 = g + h then bound - g, t2 = 6
+.Lapply:
+    lbu t2, 8(s0)
+    # t3 = t2 << 2                  (slli: face * 4, one word per face)
+    slli t3, t2, 2
+    # t3 = s5 + t3                  (&face_base[face])
+    add t3, s5, t3  
+    # t4 = mem32[t3]                (lw: perm table of this face)
+    lw t4, 0(t3)
+    # t5 = mem32[t3 + 12]           (lw: orient table, 3 words further)
+    lw t5, 12(t3)
+    # a3 = mem16[s0 + 4]            (lhu: cp)
+    lhu a3, 4(s0)
+    # a3 = a3 << 1                  (cp * 2 bytes)
+    slli a3, a3, 1
+    # a3 = t4 + a3                  (&perm_move[face][cp])
+    add a3, t4, a3
+    # a3 = mem16[a3]                (lhu: cp after one more quarter turn)
+    lhu a3, 0(a3)
+    # mem16[s0 + 4] = a3            (sh: store the new cp)
+    sh a3, 4(s0)
+    # a4 = mem16[s0 + 6]            (lhu: co)
+    lhu a4, 6(s0)
+    # a4 = a4 << 1
+    slli a4, a4, 1
+    # a4 = t5 + a4                  (&orient_move[face][co])
+    add a4, t5, a4
+    # a4 = mem16[a4]                (lhu: new co)
+    lhu a4, 0(a4)
+    # mem16[s0 + 6] = a4            (sh)
+    sh a4, 6(s0)
+    # t0 = mem8[s0 + 9]             (lbu: nt)
+    lbu t0, 9(s0)
+    # t0 = t0 + 1                   (one more quarter turn)
+    addi t0, t0, 1
+    # mem8[s0 + 9] = t0             (sb)
+    sb t0, 9(s0)
 
+    # t6 = s0 - sp                  (sub: bytes below this level)
+    sub t6, s0, sp
+    # t6 = t6 >> 4                  (srli: d)
+    srli t6, t6, 4
+    # t6 = t6 + 1                   (g = d + 1, moves after this one)
+    addi t6, t6, 1
+    # t0 = s7 + a3                  (&perm_pdb[cp])
+    add t0, s7, a3
+    # t0 = mem8[t0]                 (lbu)
+    lbu t0, 0(t0)
+    # t1 = s8 + a4                  (&orient_pdb[co])
+    add t1, s8, a4
+    # t1 = mem8[t1]                 (lbu)
+    lbu t1, 0(t1)
+    # t0 >= t1 unsigned: keep t0    (bgeu, own label)
+    bgeu t0, t1, .Lapply_keep_t0
+
+    # t0 = t1                       (mv: h)
+    mv t0, t1
+.Lapply_keep_t0:
+    # t1 = t6 + t0                  (g + h)
+    add t1, t6, t0
+    # s2 < t1 unsigned: prune       (bltu .Lloop: g + h > bound)
+    bltu s2, t1, .Lloop
+    # t1 = s2 - t6                  (sub: moves left after this one)
+    sub t1, s2, t6
+    # t2 = 6
+    addi t2, x0, 6
+    # t1 >= t2 unsigned: go deeper  (bgeu .Lpush: no lookup needed yet)
+    bgeu t1, t2, .Lpush
+    # a0 = a3                       (mv: lookup p)
+    mv a0, a3
+    # a1 = a4                       (mv: lookup o)
+    mv a1, a4
+    # call lookup                   (jal ra, .Llookup)
+    jal ra, .Llookup
+    # a0 < 0: prune                 (bltz .Lloop: at least 6 away, only t1 <= 5 left)
+    bltz a0, .Lloop
+    # t1 = s2 - t6                  (sub again: lookup changed t1)
+    sub t1, s2, t6
+    # t1 < a0 unsigned: prune       (bltu .Lloop: needs k, only t1 left)
+    bltu t1, a0, .Lloop
+    # s1 = a0                       (mv: k for the walk)
+    mv s1, a0
+    # t0 = mem32[s0 + 4]            (lw: cp, co)
+    lw t0, 4(s0)
+    # mem32[s0 + 16] = t0           (sw: ps, os of the next level)
+    sw t0, 16(s0)
+    # s0 = s0 + 16                  (the walk starts one level down)
+    addi s0, s0, 16
+    # walk                          (j .Lwalk)
+    j   .Lwalk
+
+    # D4: t0 = cp/co of this level
+.Lpush:
+    # t0 = mem32[s0 + 4]            (lw: cp, co)
+    lw t0, 4(s0)
+    # mem32[s0 + 16] = t0           (sw: next ps, os)
+    sw t0, 16(s0)
+    # mem32[s0 + 20] = t0           (sw: next cp, co)
+    sw t0, 20(s0)
+    # mem16[s0 + 24] = 0            (sh zero: next nf = nt = 0)
+    sh x0, 24(s0)
+    # s0 = s0 + 16                  (go down)
+    addi s0, s0, 16
+    # loop                          (j .Lloop)
+    j   .Lloop
+.Lback:
+    # s0 == sp: round over          (beq .Lnext_round: level 0 tried everything)
+    beq  s0, sp, .Lnext_round
+    # s0 = s0 - 16                  (go up; the parent continues where it stopped)
+    addi  s0, s0, -16
+    # loop                          (j .Lloop)
+    j .Lloop
+.Lnext_round:
+    # s2 = s2 + 1                   (bound + 1)
+    addi s2, s2,1
+    # again                         (j .Lround)
+    j .Lround
 
     # E: s0 = level, s1 = k, t2 = face, t3 = &face_base[face],
     #    t4/t5 = perm/orient table of this face, a3/a4 = new cp/co
@@ -429,7 +544,7 @@ rubik_solve_asm:
     sb x0, 0(s3)
 .Lneed_nostore:
     # a0 = -2
-    addi a0, x0, -2                 # 不管 cap 是 0 還是 1..need-1，都回傳 -2
+    addi a0, x0, -2
     # leave                         (j .Lexit)
     j .Lexit
 
@@ -502,7 +617,7 @@ rubik_solve_asm:
     # a0 = -1
     addi a0, x0, -1
 .Lexit:
-    # 還原 ra、s0 … s10（和存的時候同一個位置）
+    # restore ra, s0 .. s10         (lw: same offsets as the stores)
     lw     ra, 236(sp)
     lw     s0, 232(sp)
     lw     s1, 228(sp)
@@ -515,9 +630,9 @@ rubik_solve_asm:
     lw     s8, 200(sp)
     lw     s9, 196(sp)
     lw     s10, 192(sp)
-    # 收回 240 byte
+    # sp = sp + 240                 (close the frame)
     addi    sp, sp, 240
-    # 回傳
+    # return a0                     (ret)
     ret
 
     # lookup: a0 = p, a1 = o -> a0 = distance or -1
