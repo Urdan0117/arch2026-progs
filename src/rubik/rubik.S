@@ -215,9 +215,83 @@ rubik_solve_asm:
     # walk                          (j .Lwalk)
     j .Lwalk
 
+    # D1: a3/a4 = start p/o, t0 = h, t1 = orient h then 6, s2 = bound
 .Lsearch:
-    li   a0, 0          # temporary until part D
+    # a3 = mem16[sp + 0]            (lhu: start p)
+    lhu a3, 0(sp)
+    # a4 = mem16[sp + 2]            (lhu: start o)
+    lhu a4, 2(sp)
+    # t0 = s7 + a3                  (&perm_pdb[p])
+    add t0, s7, a3
+    # t0 = mem8[t0]                 (lbu: perm distance)
+    lbu t0, 0(t0)
+    # t1 = s8 + a4                  (&orient_pdb[o])
+    add t1, s8, a4
+    # t1 = mem8[t1]                 (lbu: orient distance)
+    lbu t1, 0(t1)
+    # t0 >= t1 unsigned: keep t0    (bgeu to the label two lines down)
+    bgeu t0, t1, .Lsearch_keep
+    # t0 = t1                       (mv: h = the larger one)
+    mv t0, t1
+    # t1 = 6
+    li t1, 6
+    # t0 >= t1 unsigned: keep t0    (bgeu: h is already at least 6)
+    bgeu t0, t1, .Lsearch_keep
+    # t0 = t1                       (mv: bound starts at 6)
+    mv t0, t1
+    # s2 = t0                       (mv: bound)
+    mv s2, t0
+
+    # D2: s0 = level, t0 = nt, t1 = 3, t2 = nf, t3 = parent nf or ps/os
+.Lround:
+    # s0 = sp                       (mv: start every round at level 0)
+    mv s0, sp
+    # t0 = mem32[sp + 0]            (lw: ps, os)
+    lw t0, 0(sp)
+    # mem32[sp + 4] = t0            (sw: cp, co = ps, os)
+    sw t0, 4(sp)
+    # mem16[sp + 8] = 0             (sh zero: nf = nt = 0)
+    sh x0, 8(sp)
+.Lloop:
+    # t0 = mem8[s0 + 9]             (lbu: nt)
+    lbu t0, 9(s0)
+    # t1 = 3
+    addi t1, x0, 3
+    # t0 != t1: same face           (bne .Lno_switch)
+    bne t0, t1, .Lno_switch
+    # t2 = mem8[s0 + 8]             (lbu: nf)
+    lbu t2, 8(s0)
+    # t2 = t2 + 1                   (next face)
+    addi t2, t2, 1
+    # mem8[s0 + 8] = t2             (sb)
+    sb t2, 8(s0)
+    # mem8[s0 + 9] = 0              (sb zero: nt = 0)
+    sb x0, 9(s0)
+    # t3 = mem32[s0 + 0]            (lw: ps, os)
+    lw t3, 0(s0)
+    # mem32[s0 + 4] = t3            (sw: cp, co start again from ps, os)
+    sw t3, 4(s0)
+.Lno_switch:
+    # t2 = mem8[s0 + 8]             (lbu: nf)
+    lbu t2, 8(s0)
+    # t2 == t1: back up             (beq .Lback: all three faces tried)
+    beq t2, t1, .Lback
+    # s0 == sp: no parent           (beq .Lapply: level 0 has no previous move)
+    beq s0, sp, .Lapply
+    # t3 = mem8[s0 - 8]             (lbu: parent nf = the previous move's face)
+    lbu t3, -8(s0)
+    # t2 != t3: apply               (bne .Lapply)
+    bne t2, t3, .Lapply
+    # mem8[s0 + 9] = t1             (sb: nt = 3, skip this whole face)
+    sb t1, 9(s0)
+    # loop                          (j .Lloop)
+    j .Lloop
+
+.Lapply:                 # 暫時：D3、D4 還沒寫
+.Lback:
+    li   a0, 0
     j    .Lexit
+
 
     # E: s0 = level, s1 = k, t2 = face, t3 = &face_base[face],
     #    t4/t5 = perm/orient table of this face, a3/a4 = new cp/co
